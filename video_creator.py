@@ -13,6 +13,12 @@ from wiki_grabber import extract_wiki_title, get_wiki_content_via_api, process_w
 from wiki_grabber import get_commons_category_images, download_thumbnail_images
 import openai
 
+def normalize_path_list(file_list):
+    """
+    Normalize all paths in a list to use consistent separators.
+    """
+    return [os.path.normpath(path) for path in file_list]
+
 # Load environment variables from .env file
 load_dotenv()
 
@@ -34,11 +40,14 @@ def parse_arguments():
 
 def setup_directories(temp_dir):
     """Create necessary directories if they don't exist."""
+    # Ensure temp_dir doesn't have duplicate path elements
+    temp_dir = os.path.normpath(temp_dir)
+    
     os.makedirs(temp_dir, exist_ok=True)
-    os.makedirs(f"{temp_dir}/wiki_content", exist_ok=True)
-    os.makedirs(f"{temp_dir}/images", exist_ok=True)
-    os.makedirs(f"{temp_dir}/audio", exist_ok=True)
-    os.makedirs(f"{temp_dir}/subtitles", exist_ok=True)
+    os.makedirs(os.path.join(temp_dir, "wiki_content"), exist_ok=True)
+    os.makedirs(os.path.join(temp_dir, "images"), exist_ok=True)
+    os.makedirs(os.path.join(temp_dir, "audio"), exist_ok=True)
+    os.makedirs(os.path.join(temp_dir, "subtitles"), exist_ok=True)
 
 def fetch_wiki_content(links, temp_dir):
     """Fetch content from Wikipedia using wiki_grabber.py."""
@@ -62,7 +71,7 @@ def fetch_wiki_content(links, temp_dir):
             text_content, html_content = process_wiki_content(wiki_data)
             
             # Save content to a file
-            content_file = f"{temp_dir}/wiki_content/wiki_{i}.txt"
+            content_file = os.path.join(temp_dir, "wiki_content", f"wiki_{i}.txt")
             with open(content_file, "w", encoding="utf-8") as f:
                 f.write(text_content)
             
@@ -77,7 +86,7 @@ def fetch_wiki_content(links, temp_dir):
             images = get_commons_category_images(page_title, max_images=10)
             
             if images:
-                image_dir = f"{temp_dir}/images/{i}_{page_title.replace(' ', '_')}"
+                image_dir = os.path.join(temp_dir, "images", f"{i}_{page_title.replace(' ', '_')}")
                 os.makedirs(image_dir, exist_ok=True)
                 saved_images = download_thumbnail_images(images, folder=image_dir, min_width=1280)
                 
@@ -170,8 +179,8 @@ def create_narration(script, temp_dir):
     # FIX: Import from narrate.py instead of narrate_updated.py
     from narrate import narrate_text
     
-    script_file = f"{temp_dir}/script.txt"
-    narration_file = f"{temp_dir}/audio/narration.mp3"
+    script_file = os.path.join(temp_dir, "script.txt")
+    narration_file = os.path.join(temp_dir, "audio", "narration.mp3")
     
     with open(script_file, "w", encoding="utf-8") as f:
         f.write(script)
@@ -262,7 +271,7 @@ def generate_subtitles(narration_file, script, temp_dir):
         subtitle_content += f"{format_time(current_time)} --> {format_time(end_time)}\n"
         subtitle_content += f"{line}\n\n"
     
-    subtitle_file = f"{temp_dir}/subtitles/subtitles.srt"
+    subtitle_file = os.path.join(temp_dir, "subtitles", "subtitles.srt")
     with open(subtitle_file, "w", encoding="utf-8") as f:
         f.write(subtitle_content)
     
@@ -323,8 +332,11 @@ def create_video_with_segments(title, narration_file, subtitle_file, images, par
             duration = audio_duration * char_ratio
             paragraph_durations.append(duration)
         
+        # Normalize paths
+        images = normalize_path_list(images)
+
         # Create a file with image transitions
-        image_list_file = f"{temp_dir}/image_list.txt"
+        image_list_file = os.path.join(temp_dir, "image_list.txt")
         with open(image_list_file, "w", encoding="utf-8") as f:
             for i, (image, duration) in enumerate(zip(images, paragraph_durations)):
                 f.write(f"file '{image}'\n")
@@ -335,7 +347,7 @@ def create_video_with_segments(title, narration_file, subtitle_file, images, par
         
         # Create the video with images
         print("Creating video with images...")
-        video_temp = f"{temp_dir}/temp_video.mp4"
+        video_temp = os.path.join(temp_dir, "temp_video.mp4")
         ffmpeg_cmd = [
             "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", image_list_file,
             "-c:v", "libx264", "-r", "30", "-pix_fmt", "yuv420p", video_temp
@@ -344,7 +356,7 @@ def create_video_with_segments(title, narration_file, subtitle_file, images, par
         
         # Add audio to the video
         print("Adding narration to video...")
-        video_with_audio = f"{temp_dir}/video_with_audio.mp4"
+        video_with_audio = os.path.join(temp_dir, "video_with_audio.mp4")
         ffmpeg_cmd = [
             "ffmpeg", "-y", "-i", video_temp, "-i", narration_file,
             "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac",
@@ -385,8 +397,11 @@ def create_video(title, narration_file, subtitle_file, images, output_file, temp
         ]
         audio_duration = float(subprocess.check_output(ffprobe_cmd).decode('utf-8').strip())
         
+        # Normalize paths
+        images = normalize_path_list(images)
+
         # Create a file with image transitions
-        image_list_file = f"{temp_dir}/image_list.txt"
+        image_list_file = os.path.join(temp_dir, "image_list.txt")
         with open(image_list_file, "w", encoding="utf-8") as f:
             images_count = len(images)
             duration_per_image = audio_duration / images_count
@@ -400,7 +415,7 @@ def create_video(title, narration_file, subtitle_file, images, output_file, temp
         
         # Create the video with images
         print("Creating video with images...")
-        video_temp = f"{temp_dir}/temp_video.mp4"
+        video_temp = os.path.join(temp_dir, "temp_video.mp4")
         ffmpeg_cmd = [
             "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", image_list_file,
             "-c:v", "libx264", "-r", "30", "-pix_fmt", "yuv420p", video_temp
@@ -409,7 +424,7 @@ def create_video(title, narration_file, subtitle_file, images, output_file, temp
         
         # Add audio to the video
         print("Adding narration to video...")
-        video_with_audio = f"{temp_dir}/video_with_audio.mp4"
+        video_with_audio = os.path.join(temp_dir, "video_with_audio.mp4")
         ffmpeg_cmd = [
             "ffmpeg", "-y", "-i", video_temp, "-i", narration_file,
             "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac",
@@ -456,7 +471,7 @@ def main():
     
     # Generate script
     script = generate_script(args.title, wiki_contents, args.length)
-    script_file = f"{args.temp_dir}/script.txt"
+    script_file = os.path.join(args.temp_dir, "script.txt")
     with open(script_file, "w", encoding="utf-8") as f:
         f.write(script)
     print(f"Script saved to {script_file}")
@@ -475,7 +490,7 @@ def main():
     subtitle_file = generate_subtitles(narration_file, script, args.temp_dir)
     
     # Create a base video without title cards
-    base_output = f"{args.temp_dir}/base_video.mp4"
+    base_output = os.path.join(args.temp_dir, "base_video.mp4")
     
     # Create the video with paragraph-based timing
     success = create_video_with_segments(
