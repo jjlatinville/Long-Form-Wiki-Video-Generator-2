@@ -13,23 +13,6 @@ from wiki_grabber import extract_wiki_title, get_wiki_content_via_api, process_w
 from wiki_grabber import get_commons_category_images, download_thumbnail_images
 import openai
 
-def normalize_path(path):
-    """
-    Normalize a single path to use forward slashes and fix common path issues.
-    """
-    # Get absolute path first
-    path = os.path.abspath(path)
-    
-    # Convert Windows backslashes to forward slashes
-    path = path.replace('\\', '/')
-    
-    # Remove any duplicate slashes
-    path = re.sub(r'/+', '/', path)
-    
-    # Ensure no duplicate temp directories
-    path = re.sub(r'(^|/)temp/temp/', r'\1temp/', path)
-    
-    return path
 
 def normalize_path_list(file_list):
     """
@@ -384,6 +367,7 @@ def format_time(seconds):
     
     return f"{hours:02d}:{minutes:02d}:{seconds_int:02d},{milliseconds:03d}"
 
+# Replace the create_video_with_segments function with this improved version
 def create_video_with_segments(title, narration_file, subtitle_file, images, paragraphs, output_file, temp_dir):
     """Create a video with better segment/image synchronization based on script paragraphs."""
     if not images:
@@ -433,27 +417,20 @@ def create_video_with_segments(title, narration_file, subtitle_file, images, par
         # Normalize paths for FFmpeg compatibility
         images = normalize_path_list(images)
         
-        # Debug: Print normalized image paths
-        print("Normalized image paths:")
-        for img in images:
-            print(f"  - {img}")
-
         # Create a file with image transitions
         image_list_file = normalize_path(os.path.join(temp_dir, "image_list.txt"))
         with open(image_list_file, "w", encoding="utf-8") as f:
-            # For debugging, print all image paths
-            print("Images being added to list file:")
-            for img in images:
-                print(f"  - {img}")
-                
             for i, (image, duration) in enumerate(zip(images, paragraph_durations)):
                 # Ensure image path is absolute and properly formatted
                 img_path = normalize_path(os.path.abspath(image))
+                # Escape single quotes in path
+                img_path = img_path.replace("'", "'\\''")
                 f.write(f"file '{img_path}'\n")
                 f.write(f"duration {duration}\n")
             
-            # Ensure image path is absolute and properly formatted
+            # Add last image
             img_path = normalize_path(os.path.abspath(images[-1]))
+            img_path = img_path.replace("'", "'\\''")
             f.write(f"file '{img_path}'\n")
         
         # Create the video with images
@@ -461,14 +438,10 @@ def create_video_with_segments(title, narration_file, subtitle_file, images, par
         video_temp = os.path.join(temp_dir, "temp_video.mp4")
         video_temp = normalize_path(video_temp)
         
-        print(f"Using image list file: {image_list_file}")
-        print(f"Output temp video: {video_temp}")
-        
         ffmpeg_cmd = [
             "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", image_list_file,
             "-c:v", "libx264", "-r", "30", "-pix_fmt", "yuv420p", video_temp
         ]
-        print(f"Running ffmpeg command: {' '.join(ffmpeg_cmd)}")
         subprocess.run(ffmpeg_cmd, check=True)
         
         # Add audio to the video
@@ -483,17 +456,67 @@ def create_video_with_segments(title, narration_file, subtitle_file, images, par
         ]
         subprocess.run(ffmpeg_cmd, check=True)
         
-        # Add subtitles to the video
+        # Add subtitles to the video using hardcoded method
         print("Adding subtitles to video...")
         subtitle_file = normalize_path(subtitle_file)
         output_file = normalize_path(output_file)
         
-        ffmpeg_cmd = [
-            "ffmpeg", "-y", "-i", video_with_audio, "-vf",
-            f"subtitles={subtitle_file}:force_style='FontSize=24,FontName=Arial,Alignment=2,BorderStyle=4,OutlineColour=&H40000000,BackColour=&H40000000'",
-            "-c:a", "copy", output_file
-        ]
-        subprocess.run(ffmpeg_cmd, check=True)
+        # Try method 1: Using subtitles filter with simplified options
+        try:
+            print("Trying subtitle method 1...")
+            
+            # Create a clean copy of the subtitle file with simpler path
+            simple_sub_file = os.path.join(temp_dir, "simple_subs.srt")
+            simple_sub_file = normalize_path(simple_sub_file)
+            import shutil
+            shutil.copy2(subtitle_file, simple_sub_file)
+            
+            # Use a simpler subtitle filter with fewer options
+            ffmpeg_cmd = [
+                "ffmpeg", "-y", "-i", video_with_audio, 
+                "-vf", f"subtitles={simple_sub_file}", 
+                "-c:a", "copy", output_file
+            ]
+            subprocess.run(ffmpeg_cmd, check=True)
+        except subprocess.CalledProcessError:
+            print("First subtitle method failed, trying method 2...")
+            
+            # Try method 2: Hardcode the subtitles into the video with ASS format
+            try:
+                # Convert SRT to ASS (Advanced SubStation Alpha)
+                ass_subtitle = os.path.join(temp_dir, "subtitles.ass")
+                ass_subtitle = normalize_path(ass_subtitle)
+                
+                # First create a simple ASS file from the SRT
+                ffmpeg_cmd = [
+                    "ffmpeg", "-y", "-i", subtitle_file, ass_subtitle
+                ]
+                subprocess.run(ffmpeg_cmd, check=True)
+                
+                # Then hardcode the ASS subtitles
+                ffmpeg_cmd = [
+                    "ffmpeg", "-y", "-i", video_with_audio, 
+                    "-vf", f"ass={ass_subtitle}", 
+                    "-c:a", "copy", output_file
+                ]
+                subprocess.run(ffmpeg_cmd, check=True)
+            except subprocess.CalledProcessError:
+                print("Second subtitle method failed, trying method 3 (no styling)...")
+                
+                # Try method 3: Simplest possible approach with no styling
+                ffmpeg_cmd = [
+                    "ffmpeg", "-y", "-i", video_with_audio, 
+                    "-vf", f"subtitles={simple_sub_file}:force_style=''", 
+                    "-c:a", "copy", output_file
+                ]
+                try:
+                    subprocess.run(ffmpeg_cmd, check=True)
+                except subprocess.CalledProcessError:
+                    print("All subtitle methods failed. Creating video without subtitles.")
+                    
+                    # Fall back to no subtitles if all methods fail
+                    import shutil
+                    shutil.copy2(video_with_audio, output_file)
         
         print(f"Video created successfully: {output_file}")
         return True
@@ -505,6 +528,164 @@ def create_video_with_segments(title, narration_file, subtitle_file, images, par
         print(f"Unexpected error: {e}")
         return False
 
+# Also update the create_video function with similar fixes
+def create_video(title, narration_file, subtitle_file, images, output_file, temp_dir):
+    """Create the final video with narration, subtitles, and images."""
+    if not images:
+        print("No images available for the video.")
+        return False
+    
+    try:
+        # First, determine audio duration
+        ffprobe_cmd = [
+            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1", narration_file
+        ]
+        audio_duration = float(subprocess.check_output(ffprobe_cmd).decode('utf-8').strip())
+        
+        # Normalize paths
+        images = normalize_path_list(images)
+        
+        # Create a file with image transitions
+        image_list_file = normalize_path(os.path.join(temp_dir, "image_list.txt"))
+        with open(image_list_file, "w", encoding="utf-8") as f:
+            images_count = len(images)
+            duration_per_image = audio_duration / images_count
+            
+            for i, image in enumerate(images):
+                # Ensure image path is absolute and properly formatted
+                img_path = normalize_path(os.path.abspath(image))
+                # Escape single quotes in path
+                img_path = img_path.replace("'", "'\\''")
+                f.write(f"file '{img_path}'\n")
+                f.write(f"duration {duration_per_image}\n")
+            
+            # Add last image
+            img_path = normalize_path(os.path.abspath(images[-1]))
+            img_path = img_path.replace("'", "'\\''")
+            f.write(f"file '{img_path}'\n")
+        
+        # Create the video with images
+        print("Creating video with images...")
+        video_temp = normalize_path(os.path.join(temp_dir, "temp_video.mp4"))
+        
+        ffmpeg_cmd = [
+            "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", image_list_file,
+            "-c:v", "libx264", "-r", "30", "-pix_fmt", "yuv420p", video_temp
+        ]
+        subprocess.run(ffmpeg_cmd, check=True)
+        
+        # Add audio to the video
+        print("Adding narration to video...")
+        video_with_audio = normalize_path(os.path.join(temp_dir, "video_with_audio.mp4"))
+        narration_file = normalize_path(narration_file)
+        
+        ffmpeg_cmd = [
+            "ffmpeg", "-y", "-i", video_temp, "-i", narration_file,
+            "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac",
+            "-shortest", video_with_audio
+        ]
+        subprocess.run(ffmpeg_cmd, check=True)
+        
+        # Add subtitles to the video using fallback methods
+        print("Adding subtitles to video...")
+        subtitle_file = normalize_path(subtitle_file)
+        output_file = normalize_path(output_file)
+        
+        # Try method 1: Using subtitles filter with simplified options
+        try:
+            print("Trying subtitle method 1...")
+            
+            # Create a clean copy of the subtitle file with simpler path
+            simple_sub_file = os.path.join(temp_dir, "simple_subs.srt")
+            simple_sub_file = normalize_path(simple_sub_file)
+            import shutil
+            shutil.copy2(subtitle_file, simple_sub_file)
+            
+            # Use a simpler subtitle filter with fewer options
+            ffmpeg_cmd = [
+                "ffmpeg", "-y", "-i", video_with_audio, 
+                "-vf", f"subtitles={simple_sub_file}", 
+                "-c:a", "copy", output_file
+            ]
+            subprocess.run(ffmpeg_cmd, check=True)
+        except subprocess.CalledProcessError:
+            print("First subtitle method failed, trying method 2...")
+            
+            # Try method 2: Hardcode the subtitles into the video with ASS format
+            try:
+                # Convert SRT to ASS (Advanced SubStation Alpha)
+                ass_subtitle = os.path.join(temp_dir, "subtitles.ass")
+                ass_subtitle = normalize_path(ass_subtitle)
+                
+                # First create a simple ASS file from the SRT
+                ffmpeg_cmd = [
+                    "ffmpeg", "-y", "-i", subtitle_file, ass_subtitle
+                ]
+                subprocess.run(ffmpeg_cmd, check=True)
+                
+                # Then hardcode the ASS subtitles
+                ffmpeg_cmd = [
+                    "ffmpeg", "-y", "-i", video_with_audio, 
+                    "-vf", f"ass={ass_subtitle}", 
+                    "-c:a", "copy", output_file
+                ]
+                subprocess.run(ffmpeg_cmd, check=True)
+            except subprocess.CalledProcessError:
+                print("Second subtitle method failed, trying method 3 (no styling)...")
+                
+                # Try method 3: Simplest possible approach with no styling
+                ffmpeg_cmd = [
+                    "ffmpeg", "-y", "-i", video_with_audio, 
+                    "-vf", f"subtitles={simple_sub_file}:force_style=''", 
+                    "-c:a", "copy", output_file
+                ]
+                try:
+                    subprocess.run(ffmpeg_cmd, check=True)
+                except subprocess.CalledProcessError:
+                    print("All subtitle methods failed. Creating video without subtitles.")
+                    
+                    # Fall back to no subtitles if all methods fail
+                    import shutil
+                    shutil.copy2(video_with_audio, output_file)
+        
+        print(f"Video created successfully: {output_file}")
+        return True
+        
+    except subprocess.CalledProcessError as e:
+        print(f"Error creating video: {e}")
+        return False
+    except Exception as e:
+        print(f"Unexpected error: {e}")
+        return False
+
+# Also improve the normalize_path function for better Windows compatibility
+def normalize_path(path):
+    """
+    Normalize a single path to use forward slashes and fix common path issues.
+    """
+    # Get absolute path first
+    path = os.path.abspath(path)
+    
+    # Convert Windows backslashes to forward slashes
+    path = path.replace('\\', '/')
+    
+    # Remove any duplicate slashes
+    path = re.sub(r'/+', '/', path)
+    
+    # Ensure no duplicate temp directories
+    path = re.sub(r'(^|/)temp/temp/', r'\1temp/', path)
+    
+    # FFmpeg on Windows may need the path to start with a drive letter
+    if os.name == 'nt' and not path.startswith('/') and not re.match(r'^[a-zA-Z]:', path):
+        # Try to prefix with current drive
+        import platform
+        if platform.system() == 'Windows':
+            drive = os.getcwd().split(':')[0]
+            path = f"{drive}:{path}" if ':' not in path else path
+    
+    return path
+    
 def create_video(title, narration_file, subtitle_file, images, output_file, temp_dir):
     """Create the final video with narration, subtitles, and images."""
     if not images:
