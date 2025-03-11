@@ -15,9 +15,11 @@ import openai
 
 def normalize_path_list(file_list):
     """
-    Normalize all paths in a list to use consistent separators.
+    Normalize all paths in a list to use forward slashes for FFmpeg compatibility.
     """
-    return [os.path.normpath(path) for path in file_list]
+    # Convert all backslashes to forward slashes for FFmpeg compatibility
+    # FFmpeg prefers forward slashes even on Windows
+    return [path.replace('\\', '/') for path in file_list]
 
 # Load environment variables from .env file
 load_dotenv()
@@ -40,14 +42,38 @@ def parse_arguments():
 
 def setup_directories(temp_dir):
     """Create necessary directories if they don't exist."""
-    # Ensure temp_dir doesn't have duplicate path elements
+    # Ensure temp_dir doesn't have duplicate path elements and uses consistent separators
     temp_dir = os.path.normpath(temp_dir)
     
+    # Print the actual directory paths for debugging
+    print(f"Setting up directories with base temp_dir: {temp_dir}")
+    
     os.makedirs(temp_dir, exist_ok=True)
-    os.makedirs(os.path.join(temp_dir, "wiki_content"), exist_ok=True)
-    os.makedirs(os.path.join(temp_dir, "images"), exist_ok=True)
-    os.makedirs(os.path.join(temp_dir, "audio"), exist_ok=True)
-    os.makedirs(os.path.join(temp_dir, "subtitles"), exist_ok=True)
+    
+    wiki_content_dir = os.path.join(temp_dir, "wiki_content")
+    images_dir = os.path.join(temp_dir, "images")
+    audio_dir = os.path.join(temp_dir, "audio")
+    subtitles_dir = os.path.join(temp_dir, "subtitles")
+    
+    print(f"Creating directory structure:")
+    print(f"- Wiki content: {wiki_content_dir}")
+    print(f"- Images: {images_dir}")
+    print(f"- Audio: {audio_dir}")
+    print(f"- Subtitles: {subtitles_dir}")
+    
+    os.makedirs(wiki_content_dir, exist_ok=True)
+    os.makedirs(images_dir, exist_ok=True)
+    os.makedirs(audio_dir, exist_ok=True)
+    os.makedirs(subtitles_dir, exist_ok=True)
+    
+    # Convert all paths to use forward slashes for FFmpeg compatibility
+    return {
+        "temp_dir": temp_dir.replace('\\', '/'),
+        "wiki_content_dir": wiki_content_dir.replace('\\', '/'),
+        "images_dir": images_dir.replace('\\', '/'),
+        "audio_dir": audio_dir.replace('\\', '/'),
+        "subtitles_dir": subtitles_dir.replace('\\', '/')
+    }
 
 def fetch_wiki_content(links, temp_dir):
     """Fetch content from Wikipedia using wiki_grabber.py."""
@@ -332,17 +358,22 @@ def create_video_with_segments(title, narration_file, subtitle_file, images, par
             duration = audio_duration * char_ratio
             paragraph_durations.append(duration)
         
-        # Normalize paths
-        images = normalize_path_list(images)
+        # Normalize paths for FFmpeg compatibility
+        images = [img_path.replace('\\', '/') for img_path in images]
 
         # Create a file with image transitions
         image_list_file = os.path.join(temp_dir, "image_list.txt")
         with open(image_list_file, "w", encoding="utf-8") as f:
+            # For debugging, print all image paths
+            print("Images being added to list file:")
+            for img in images:
+                print(f"  - {img}")
+                
             for i, (image, duration) in enumerate(zip(images, paragraph_durations)):
                 f.write(f"file '{image}'\n")
                 f.write(f"duration {duration}\n")
             
-            # Add the last image again to avoid a "last image duration" warning
+            # Add the last image again
             f.write(f"file '{images[-1]}'\n")
         
         # Create the video with images
