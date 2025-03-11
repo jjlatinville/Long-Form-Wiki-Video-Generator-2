@@ -13,13 +13,46 @@ from wiki_grabber import extract_wiki_title, get_wiki_content_via_api, process_w
 from wiki_grabber import get_commons_category_images, download_thumbnail_images
 import openai
 
+def normalize_path(path):
+    """
+    Normalize a single path to use forward slashes and fix common path issues.
+    """
+    # Get absolute path first
+    path = os.path.abspath(path)
+    
+    # Convert Windows backslashes to forward slashes
+    path = path.replace('\\', '/')
+    
+    # Remove any duplicate slashes
+    path = re.sub(r'/+', '/', path)
+    
+    # Ensure no duplicate temp directories
+    path = re.sub(r'(^|/)temp/temp/', r'\1temp/', path)
+    
+    return path
+
 def normalize_path_list(file_list):
     """
     Normalize all paths in a list to use forward slashes for FFmpeg compatibility.
+    Also ensures absolute paths are properly formatted.
     """
-    # Convert all backslashes to forward slashes for FFmpeg compatibility
-    # FFmpeg prefers forward slashes even on Windows
-    return [path.replace('\\', '/') for path in file_list]
+    normalized = []
+    for path in file_list:
+        # Convert to absolute path
+        path = os.path.abspath(path)
+        
+        # Convert Windows backslashes to forward slashes
+        path = path.replace('\\', '/')
+        
+        # Remove any duplicate slashes
+        path = re.sub(r'/+', '/', path)
+        
+        # Ensure no duplicate temp directories
+        path = re.sub(r'(^|/)temp/temp/', r'\1temp/', path)
+        
+        normalized.append(path)
+    
+    return normalized
 
 # Load environment variables from .env file
 load_dotenv()
@@ -66,13 +99,13 @@ def setup_directories(temp_dir):
     os.makedirs(audio_dir, exist_ok=True)
     os.makedirs(subtitles_dir, exist_ok=True)
     
-    # Convert all paths to use forward slashes for FFmpeg compatibility
+    # Normalize all paths for consistency
     return {
-        "temp_dir": temp_dir.replace('\\', '/'),
-        "wiki_content_dir": wiki_content_dir.replace('\\', '/'),
-        "images_dir": images_dir.replace('\\', '/'),
-        "audio_dir": audio_dir.replace('\\', '/'),
-        "subtitles_dir": subtitles_dir.replace('\\', '/')
+        "temp_dir": normalize_path(temp_dir),
+        "wiki_content_dir": normalize_path(wiki_content_dir),
+        "images_dir": normalize_path(images_dir),
+        "audio_dir": normalize_path(audio_dir),
+        "subtitles_dir": normalize_path(subtitles_dir)
     }
 
 def fetch_wiki_content(links, temp_dir):
@@ -359,10 +392,15 @@ def create_video_with_segments(title, narration_file, subtitle_file, images, par
             paragraph_durations.append(duration)
         
         # Normalize paths for FFmpeg compatibility
-        images = [img_path.replace('\\', '/') for img_path in images]
+        images = normalize_path_list(images)
+        
+        # Debug: Print normalized image paths
+        print("Normalized image paths:")
+        for img in images:
+            print(f"  - {img}")
 
         # Create a file with image transitions
-        image_list_file = os.path.join(temp_dir, "image_list.txt")
+        image_list_file = normalize_path(os.path.join(temp_dir, "image_list.txt"))
         with open(image_list_file, "w", encoding="utf-8") as f:
             # For debugging, print all image paths
             print("Images being added to list file:")
@@ -370,24 +408,35 @@ def create_video_with_segments(title, narration_file, subtitle_file, images, par
                 print(f"  - {img}")
                 
             for i, (image, duration) in enumerate(zip(images, paragraph_durations)):
-                f.write(f"file '{image}'\n")
+                # Ensure image path is absolute and properly formatted
+                img_path = normalize_path(os.path.abspath(image))
+                f.write(f"file '{img_path}'\n")
                 f.write(f"duration {duration}\n")
             
-            # Add the last image again
-            f.write(f"file '{images[-1]}'\n")
+            # Ensure image path is absolute and properly formatted
+            img_path = normalize_path(os.path.abspath(images[-1]))
+            f.write(f"file '{img_path}'\n")
         
         # Create the video with images
         print("Creating video with images...")
         video_temp = os.path.join(temp_dir, "temp_video.mp4")
+        video_temp = normalize_path(video_temp)
+        
+        print(f"Using image list file: {image_list_file}")
+        print(f"Output temp video: {video_temp}")
+        
         ffmpeg_cmd = [
             "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", image_list_file,
             "-c:v", "libx264", "-r", "30", "-pix_fmt", "yuv420p", video_temp
         ]
+        print(f"Running ffmpeg command: {' '.join(ffmpeg_cmd)}")
         subprocess.run(ffmpeg_cmd, check=True)
         
         # Add audio to the video
         print("Adding narration to video...")
         video_with_audio = os.path.join(temp_dir, "video_with_audio.mp4")
+        video_with_audio = normalize_path(video_with_audio)
+        
         ffmpeg_cmd = [
             "ffmpeg", "-y", "-i", video_temp, "-i", narration_file,
             "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac",
@@ -397,6 +446,9 @@ def create_video_with_segments(title, narration_file, subtitle_file, images, par
         
         # Add subtitles to the video
         print("Adding subtitles to video...")
+        subtitle_file = normalize_path(subtitle_file)
+        output_file = normalize_path(output_file)
+        
         ffmpeg_cmd = [
             "ffmpeg", "-y", "-i", video_with_audio, "-vf",
             f"subtitles={subtitle_file}:force_style='FontSize=24,FontName=Arial,Alignment=2,BorderStyle=4,OutlineColour=&H40000000,BackColour=&H40000000'",
@@ -430,32 +482,45 @@ def create_video(title, narration_file, subtitle_file, images, output_file, temp
         
         # Normalize paths
         images = normalize_path_list(images)
+        
+        # Debug: Print normalized image paths
+        print("Normalized image paths:")
+        for img in images:
+            print(f"  - {img}")
 
         # Create a file with image transitions
-        image_list_file = os.path.join(temp_dir, "image_list.txt")
+        image_list_file = normalize_path(os.path.join(temp_dir, "image_list.txt"))
         with open(image_list_file, "w", encoding="utf-8") as f:
             images_count = len(images)
             duration_per_image = audio_duration / images_count
             
             for i, image in enumerate(images):
-                f.write(f"file '{image}'\n")
+                # Ensure image path is absolute and properly formatted
+                img_path = normalize_path(os.path.abspath(image))
+                f.write(f"file '{img_path}'\n")
                 f.write(f"duration {duration_per_image}\n")
             
-            # Add the last image again to avoid a "last image duration" warning
-            f.write(f"file '{images[-1]}'\n")
+            # Ensure image path is absolute and properly formatted
+            img_path = normalize_path(os.path.abspath(images[-1]))
+            f.write(f"file '{img_path}'\n")
         
         # Create the video with images
         print("Creating video with images...")
-        video_temp = os.path.join(temp_dir, "temp_video.mp4")
+        print(f"Using image list file: {image_list_file}")
+        
+        video_temp = normalize_path(os.path.join(temp_dir, "temp_video.mp4"))
         ffmpeg_cmd = [
             "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", image_list_file,
             "-c:v", "libx264", "-r", "30", "-pix_fmt", "yuv420p", video_temp
         ]
+        print(f"Running ffmpeg command: {' '.join(ffmpeg_cmd)}")
         subprocess.run(ffmpeg_cmd, check=True)
         
         # Add audio to the video
         print("Adding narration to video...")
-        video_with_audio = os.path.join(temp_dir, "video_with_audio.mp4")
+        video_with_audio = normalize_path(os.path.join(temp_dir, "video_with_audio.mp4"))
+        narration_file = normalize_path(narration_file)
+        
         ffmpeg_cmd = [
             "ffmpeg", "-y", "-i", video_temp, "-i", narration_file,
             "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac",
@@ -465,6 +530,9 @@ def create_video(title, narration_file, subtitle_file, images, output_file, temp
         
         # Add subtitles to the video
         print("Adding subtitles to video...")
+        subtitle_file = normalize_path(subtitle_file)
+        output_file = normalize_path(output_file)
+        
         ffmpeg_cmd = [
             "ffmpeg", "-y", "-i", video_with_audio, "-vf",
             f"subtitles={subtitle_file}:force_style='FontSize=24,Alignment=2'",
@@ -491,7 +559,7 @@ def main():
     print(f"Target script length: {args.length} characters")
     
     # Set up directories
-    setup_directories(args.temp_dir)
+    directories = setup_directories(args.temp_dir)
     
     # Fetch Wikipedia content
     wiki_contents, images = fetch_wiki_content(args.links, args.temp_dir)
@@ -521,7 +589,13 @@ def main():
     subtitle_file = generate_subtitles(narration_file, script, args.temp_dir)
     
     # Create a base video without title cards
-    base_output = os.path.join(args.temp_dir, "base_video.mp4")
+    base_output = normalize_path(os.path.join(args.temp_dir, "base_video.mp4"))
+    
+    # Debug: print image paths before creating video
+    print(f"Images available for video ({len(images)}):")
+    for i, img in enumerate(images):
+        exists = os.path.exists(img)
+        print(f"  {i+1}. {img} (Exists: {exists})")
     
     # Create the video with paragraph-based timing
     success = create_video_with_segments(
