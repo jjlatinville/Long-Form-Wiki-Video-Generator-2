@@ -1,0 +1,7 @@
+# API Keys
+OPENAI_API_KEY=your_openai_api_key_here
+ELEVENLABS_API_KEY=your_elevenlabs_api_key_here
+
+# Optional configuration
+DEFAULT_SCRIPT_LENGTH=2000
+DEFAULT_OUTPUT_DIR=videos
