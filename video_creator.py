@@ -167,7 +167,8 @@ def split_script_into_paragraphs(script):
 
 def create_narration(script, temp_dir):
     """Create narration using narrate.py module."""
-    from narrate_updated import narrate_text
+    # FIX: Import from narrate.py instead of narrate_updated.py
+    from narrate import narrate_text
     
     script_file = f"{temp_dir}/script.txt"
     narration_file = f"{temp_dir}/audio/narration.mp3"
