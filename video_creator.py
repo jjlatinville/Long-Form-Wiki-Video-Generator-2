@@ -60,6 +60,7 @@ load_dotenv()
 # Configure OpenAI API
 openai.api_key = os.environ.get("OPENAI_API_KEY")
 
+# Add the --test-narration parameter to parse_arguments function
 def parse_arguments():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(description="Create a video from Wikipedia content.")
@@ -70,6 +71,8 @@ def parse_arguments():
     parser.add_argument("--output", default="output_video.mp4", help="Output video filename")
     parser.add_argument("--temp_dir", default="temp", help="Directory for temporary files")
     parser.add_argument("--no-title-cards", action="store_true", help="Disable intro and outro title cards")
+    parser.add_argument("--test-narration", action="store_true", help="Use test narration audio from test_audio folder")
+    parser.add_argument("--test-audio-dir", default="test_audio", help="Directory with test audio files")
     
     return parser.parse_args()
 
@@ -233,16 +236,36 @@ def split_script_into_paragraphs(script):
     
     return paragraphs
 
-def create_narration(script, temp_dir):
-    """Create narration using narrate.py module."""
-    # FIX: Import from narrate.py instead of narrate_updated.py
-    from narrate import narrate_text
-    
-    script_file = os.path.join(temp_dir, "script.txt")
+# Modify the create_narration function to support test narration
+def create_narration(script, temp_dir, use_test_narration=False, test_audio_dir="test_audio"):
+    """Create narration using narrate.py module or test audio files."""
+    # Define output narration file path
     narration_file = os.path.join(temp_dir, "audio", "narration.mp3")
     
+    # Write script to file regardless of narration method
+    script_file = os.path.join(temp_dir, "script.txt")
     with open(script_file, "w", encoding="utf-8") as f:
         f.write(script)
+    
+    # Check if we should use test narration
+    if use_test_narration:
+        print("Using test narration instead of ElevenLabs API...")
+        
+        # Find a test audio file
+        test_audio_file = find_first_audio_file(test_audio_dir)
+        
+        if test_audio_file:
+            # Copy the test audio file to the narration file location
+            import shutil
+            os.makedirs(os.path.dirname(narration_file), exist_ok=True)
+            shutil.copy2(test_audio_file, narration_file)
+            print(f"Using test audio file: {test_audio_file}")
+            return narration_file
+        else:
+            print("No test audio files found. Falling back to ElevenLabs...")
+    
+    # If we're not using test narration or no test files were found, use ElevenLabs
+    from narrate import narrate_text
     
     print("Generating narration using ElevenLabs...")
     try:
@@ -265,6 +288,22 @@ def create_narration(script, temp_dir):
     except Exception as e:
         print(f"Error generating narration: {e}")
         return None
+
+# Helper function to find the first audio file in a directory
+def find_first_audio_file(directory):
+    """Find the first audio file in a directory."""
+    if not os.path.exists(directory):
+        print(f"Warning: Test audio directory {directory} does not exist.")
+        return None
+    
+    valid_extensions = ['.mp3', '.wav', '.m4a', '.aac']
+    
+    for file in os.listdir(directory):
+        for ext in valid_extensions:
+            if file.lower().endswith(ext):
+                return os.path.join(directory, file)
+    
+    return None
 
 def generate_subtitles(narration_file, script, temp_dir):
     """Generate subtitles from the narration using speech-to-text or timing estimation."""
@@ -550,6 +589,7 @@ def create_video(title, narration_file, subtitle_file, images, output_file, temp
         print(f"Unexpected error: {e}")
         return False
 
+# Update the main function to pass the test narration parameters
 def main():
     """Main function to coordinate the video creation process."""
     args = parse_arguments()
@@ -579,8 +619,14 @@ def main():
     paragraphs = split_script_into_paragraphs(script)
     print(f"Script split into {len(paragraphs)} paragraphs for timing")
     
-    # Create narration
-    narration_file = create_narration(script, args.temp_dir)
+    # Create narration (with test narration support)
+    narration_file = create_narration(
+        script, 
+        args.temp_dir, 
+        use_test_narration=args.test_narration,
+        test_audio_dir=args.test_audio_dir
+    )
+    
     if not narration_file:
         print("Failed to create narration. Exiting.")
         return
