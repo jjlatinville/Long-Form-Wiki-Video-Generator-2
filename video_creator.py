@@ -37,6 +37,48 @@ def normalize_path_list(file_list):
     
     return normalized
 
+def normalize_path(path):
+    """
+    Normalize a path for cross-platform compatibility with FFmpeg.
+    """
+    # Get absolute path
+    path = os.path.abspath(path)
+    
+    # Remove any duplicate directory references
+    path = re.sub(r'(/|\\)temp\1temp\1', r'\1temp\1', path)
+    
+    # For Windows: handle path format
+    if os.name == 'nt':
+        # Ensure the path has a drive letter
+        if not re.match(r'^[a-zA-Z]:', path):
+            # Add current drive if needed
+            drive = os.getcwd().split(':')[0]
+            path = f"{drive}:{path[1:]}" if path.startswith('/') else f"{drive}:{path}"
+        
+        # Convert backslashes to forward slashes for FFmpeg
+        path = path.replace('\\', '/')
+    
+    return path
+
+def escape_path_for_ffmpeg(path):
+    """
+    Properly escape a file path for FFmpeg filter commands.
+    """
+    # Convert to absolute path and normalize slashes
+    path = normalize_path(os.path.abspath(path))
+    
+    # For Windows: escape the colon in drive letter and use forward slashes
+    if os.name == 'nt':
+        # If path has a drive letter like C:, escape the colon
+        if re.match(r'^[a-zA-Z]:', path):
+            path = path.replace(':', '\\:')
+    
+    # Escape special characters
+    path = path.replace("'", "'\\''")
+    path = path.replace("\\", "/")
+    
+    return path
+
 # Load environment variables from .env file
 load_dotenv()
 
@@ -353,6 +395,118 @@ def format_time(seconds):
     
     return f"{hours:02d}:{minutes:02d}:{seconds_int:02d},{milliseconds:03d}"
 
+def try_add_subtitles(video_with_audio, subtitle_file, output_file, temp_dir):
+    """Try different methods to add subtitles to the video."""
+    # First ensure all paths are normalized
+    video_with_audio = normalize_path(video_with_audio)
+    subtitle_file = normalize_path(subtitle_file)
+    output_file = normalize_path(output_file)
+    temp_dir = normalize_path(temp_dir)
+    
+    # Try method 1: Using subtitles filter with simplified options
+    try:
+        print("Trying subtitle method 1...")
+        
+        # Create a clean copy of the subtitle file with a simple filename in temp directory
+        simple_sub_filename = "simple_subs.srt"
+        simple_sub_file = os.path.join(temp_dir, simple_sub_filename)
+        simple_sub_file = normalize_path(simple_sub_file)
+        
+        import shutil
+        shutil.copy2(subtitle_file, simple_sub_file)
+        
+        # Properly escape the subtitle path for FFmpeg
+        escaped_sub_path = escape_path_for_ffmpeg(simple_sub_file)
+        
+        # Use a simpler subtitle filter syntax
+        ffmpeg_cmd = [
+            "ffmpeg", "-y", "-i", video_with_audio, 
+            "-vf", f"subtitles='{escaped_sub_path}'", 
+            "-c:a", "copy", output_file
+        ]
+        
+        print(f"Debug - Subtitle command: {' '.join(ffmpeg_cmd)}")
+        subprocess.run(ffmpeg_cmd, check=True)
+        return True
+    except subprocess.CalledProcessError as e:
+        print(f"First subtitle method failed: {e}")
+        print("Trying method 2...")
+        
+        # Try method 2: Hardcode the subtitles into the video with ASS format
+        try:
+            # Convert SRT to ASS (Advanced SubStation Alpha)
+            ass_subtitle = os.path.join(temp_dir, "subtitles.ass")
+            ass_subtitle = normalize_path(ass_subtitle)
+            
+            # First create a simple ASS file from the SRT
+            ffmpeg_cmd = [
+                "ffmpeg", "-y", "-i", subtitle_file, ass_subtitle
+            ]
+            subprocess.run(ffmpeg_cmd, check=True)
+            
+            # Escape ASS path properly
+            escaped_ass_path = escape_path_for_ffmpeg(ass_subtitle)
+            
+            # Then hardcode the ASS subtitles
+            ffmpeg_cmd = [
+                "ffmpeg", "-y", "-i", video_with_audio, 
+                "-vf", f"ass='{escaped_ass_path}'", 
+                "-c:a", "copy", output_file
+            ]
+            
+            print(f"Debug - ASS subtitle command: {' '.join(ffmpeg_cmd)}")
+            subprocess.run(ffmpeg_cmd, check=True)
+            return True
+        except subprocess.CalledProcessError as e:
+            print(f"Second subtitle method failed: {e}")
+            print("Trying method 3 (no styling)...")
+            
+            # Try method 3: Simplest possible approach with no styling
+            # Try to avoid filter complexity
+            try:
+                # Create a very simple filter with minimal options
+                ffmpeg_cmd = [
+                    "ffmpeg", "-y", "-i", video_with_audio, 
+                    "-vf", "subtitles=" + simple_sub_file.replace('\\', '/').replace(':', '\\:'), 
+                    "-c:a", "copy", output_file
+                ]
+                
+                print(f"Debug - Simplified subtitle command: {' '.join(ffmpeg_cmd)}")
+                subprocess.run(ffmpeg_cmd, check=True)
+                return True
+            except subprocess.CalledProcessError as e:
+                print(f"Third subtitle method failed: {e}")
+                
+                # Try method 4: Use a temporary copy in the root directory
+                try:
+                    # Copy subtitle to current directory to minimize path issues
+                    import os
+                    current_dir_subs = "current_dir_subs.srt"
+                    shutil.copy2(subtitle_file, current_dir_subs)
+                    
+                    ffmpeg_cmd = [
+                        "ffmpeg", "-y", "-i", video_with_audio, 
+                        "-vf", f"subtitles={current_dir_subs}", 
+                        "-c:a", "copy", output_file
+                    ]
+                    
+                    print(f"Debug - Current directory subtitle command: {' '.join(ffmpeg_cmd)}")
+                    subprocess.run(ffmpeg_cmd, check=True)
+                    
+                    # Clean up the temporary file
+                    if os.path.exists(current_dir_subs):
+                        os.remove(current_dir_subs)
+                        
+                    return True
+                except subprocess.CalledProcessError as e:
+                    print(f"Fourth subtitle method failed: {e}")
+                    print("All subtitle methods failed. Creating video without subtitles.")
+                    
+                    # Fall back to no subtitles if all methods fail
+                    import shutil
+                    shutil.copy2(video_with_audio, output_file)
+                    return False
+
 # Replace the create_video_with_segments function with this improved version
 def create_video_with_segments(title, narration_file, subtitle_file, images, paragraphs, output_file, temp_dir):
     """Create a video with better segment/image synchronization based on script paragraphs."""
@@ -442,69 +596,19 @@ def create_video_with_segments(title, narration_file, subtitle_file, images, par
         ]
         subprocess.run(ffmpeg_cmd, check=True)
         
-        # Add subtitles to the video using hardcoded method
+        # Add subtitles to the video
         print("Adding subtitles to video...")
         subtitle_file = normalize_path(subtitle_file)
         output_file = normalize_path(output_file)
         
-        # Try method 1: Using subtitles filter with simplified options
-        try:
-            print("Trying subtitle method 1...")
-            
-            # Create a clean copy of the subtitle file with simpler path
-            simple_sub_file = os.path.join(temp_dir, "simple_subs.srt")
-            simple_sub_file = normalize_path(simple_sub_file)
-            import shutil
-            shutil.copy2(subtitle_file, simple_sub_file)
-            
-            # Use a simpler subtitle filter with fewer options
-            ffmpeg_cmd = [
-                "ffmpeg", "-y", "-i", video_with_audio, 
-                "-vf", f"subtitles={simple_sub_file}", 
-                "-c:a", "copy", output_file
-            ]
-            subprocess.run(ffmpeg_cmd, check=True)
-        except subprocess.CalledProcessError:
-            print("First subtitle method failed, trying method 2...")
-            
-            # Try method 2: Hardcode the subtitles into the video with ASS format
-            try:
-                # Convert SRT to ASS (Advanced SubStation Alpha)
-                ass_subtitle = os.path.join(temp_dir, "subtitles.ass")
-                ass_subtitle = normalize_path(ass_subtitle)
-                
-                # First create a simple ASS file from the SRT
-                ffmpeg_cmd = [
-                    "ffmpeg", "-y", "-i", subtitle_file, ass_subtitle
-                ]
-                subprocess.run(ffmpeg_cmd, check=True)
-                
-                # Then hardcode the ASS subtitles
-                ffmpeg_cmd = [
-                    "ffmpeg", "-y", "-i", video_with_audio, 
-                    "-vf", f"ass={ass_subtitle}", 
-                    "-c:a", "copy", output_file
-                ]
-                subprocess.run(ffmpeg_cmd, check=True)
-            except subprocess.CalledProcessError:
-                print("Second subtitle method failed, trying method 3 (no styling)...")
-                
-                # Try method 3: Simplest possible approach with no styling
-                ffmpeg_cmd = [
-                    "ffmpeg", "-y", "-i", video_with_audio, 
-                    "-vf", f"subtitles={simple_sub_file}:force_style=''", 
-                    "-c:a", "copy", output_file
-                ]
-                try:
-                    subprocess.run(ffmpeg_cmd, check=True)
-                except subprocess.CalledProcessError:
-                    print("All subtitle methods failed. Creating video without subtitles.")
-                    
-                    # Fall back to no subtitles if all methods fail
-                    import shutil
-                    shutil.copy2(video_with_audio, output_file)
+        # Try different subtitle methods with the improved function
+        subtitle_success = try_add_subtitles(video_with_audio, subtitle_file, output_file, temp_dir)
         
-        print(f"Video created successfully: {output_file}")
+        if subtitle_success:
+            print(f"Video created successfully with subtitles: {output_file}")
+        else:
+            print(f"Video created without subtitles: {output_file}")
+        
         return True
         
     except subprocess.CalledProcessError as e:
@@ -573,69 +677,18 @@ def create_video(title, narration_file, subtitle_file, images, output_file, temp
         ]
         subprocess.run(ffmpeg_cmd, check=True)
         
-        # Add subtitles to the video using fallback methods
+        # Add subtitles to the video using our improved function
         print("Adding subtitles to video...")
         subtitle_file = normalize_path(subtitle_file)
         output_file = normalize_path(output_file)
         
-        # Try method 1: Using subtitles filter with simplified options
-        try:
-            print("Trying subtitle method 1...")
-            
-            # Create a clean copy of the subtitle file with simpler path
-            simple_sub_file = os.path.join(temp_dir, "simple_subs.srt")
-            simple_sub_file = normalize_path(simple_sub_file)
-            import shutil
-            shutil.copy2(subtitle_file, simple_sub_file)
-            
-            # Use a simpler subtitle filter with fewer options
-            ffmpeg_cmd = [
-                "ffmpeg", "-y", "-i", video_with_audio, 
-                "-vf", f"subtitles={simple_sub_file}", 
-                "-c:a", "copy", output_file
-            ]
-            subprocess.run(ffmpeg_cmd, check=True)
-        except subprocess.CalledProcessError:
-            print("First subtitle method failed, trying method 2...")
-            
-            # Try method 2: Hardcode the subtitles into the video with ASS format
-            try:
-                # Convert SRT to ASS (Advanced SubStation Alpha)
-                ass_subtitle = os.path.join(temp_dir, "subtitles.ass")
-                ass_subtitle = normalize_path(ass_subtitle)
-                
-                # First create a simple ASS file from the SRT
-                ffmpeg_cmd = [
-                    "ffmpeg", "-y", "-i", subtitle_file, ass_subtitle
-                ]
-                subprocess.run(ffmpeg_cmd, check=True)
-                
-                # Then hardcode the ASS subtitles
-                ffmpeg_cmd = [
-                    "ffmpeg", "-y", "-i", video_with_audio, 
-                    "-vf", f"ass={ass_subtitle}", 
-                    "-c:a", "copy", output_file
-                ]
-                subprocess.run(ffmpeg_cmd, check=True)
-            except subprocess.CalledProcessError:
-                print("Second subtitle method failed, trying method 3 (no styling)...")
-                
-                # Try method 3: Simplest possible approach with no styling
-                ffmpeg_cmd = [
-                    "ffmpeg", "-y", "-i", video_with_audio, 
-                    "-vf", f"subtitles={simple_sub_file}:force_style=''", 
-                    "-c:a", "copy", output_file
-                ]
-                try:
-                    subprocess.run(ffmpeg_cmd, check=True)
-                except subprocess.CalledProcessError:
-                    print("All subtitle methods failed. Creating video without subtitles.")
-                    
-                    # Fall back to no subtitles if all methods fail
-                    import shutil
-                    shutil.copy2(video_with_audio, output_file)
+        subtitle_success = try_add_subtitles(video_with_audio, subtitle_file, output_file, temp_dir)
         
-        print(f"Video created successfully: {output_file}")
+        if subtitle_success:
+            print(f"Video created successfully with subtitles: {output_file}")
+        else:
+            print(f"Video created without subtitles: {output_file}")
+            
         return True
         
     except subprocess.CalledProcessError as e:
@@ -644,118 +697,7 @@ def create_video(title, narration_file, subtitle_file, images, output_file, temp
     except Exception as e:
         print(f"Unexpected error: {e}")
         return False
-
-# Also improve the normalize_path function for better Windows compatibility
-def normalize_path(path):
-    """
-    Normalize a single path to use forward slashes and fix common path issues.
-    """
-    # Get absolute path first
-    path = os.path.abspath(path)
     
-    # Convert Windows backslashes to forward slashes
-    path = path.replace('\\', '/')
-    
-    # Remove any duplicate slashes
-    path = re.sub(r'/+', '/', path)
-    
-    # Ensure no duplicate temp directories
-    path = re.sub(r'(^|/)temp/temp/', r'\1temp/', path)
-    
-    # FFmpeg on Windows may need the path to start with a drive letter
-    if os.name == 'nt' and not path.startswith('/') and not re.match(r'^[a-zA-Z]:', path):
-        # Try to prefix with current drive
-        import platform
-        if platform.system() == 'Windows':
-            drive = os.getcwd().split(':')[0]
-            path = f"{drive}:{path}" if ':' not in path else path
-    
-    return path
-    
-def create_video(title, narration_file, subtitle_file, images, output_file, temp_dir):
-    """Create the final video with narration, subtitles, and images."""
-    if not images:
-        print("No images available for the video.")
-        return False
-    
-    try:
-        # First, determine audio duration
-        ffprobe_cmd = [
-            "ffprobe", "-v", "error", "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1", narration_file
-        ]
-        audio_duration = float(subprocess.check_output(ffprobe_cmd).decode('utf-8').strip())
-        
-        # Normalize paths
-        images = normalize_path_list(images)
-        
-        # Debug: Print normalized image paths
-        print("Normalized image paths:")
-        for img in images:
-            print(f"  - {img}")
-
-        # Create a file with image transitions
-        image_list_file = normalize_path(os.path.join(temp_dir, "image_list.txt"))
-        with open(image_list_file, "w", encoding="utf-8") as f:
-            images_count = len(images)
-            duration_per_image = audio_duration / images_count
-            
-            for i, image in enumerate(images):
-                # Ensure image path is absolute and properly formatted
-                img_path = normalize_path(os.path.abspath(image))
-                f.write(f"file '{img_path}'\n")
-                f.write(f"duration {duration_per_image}\n")
-            
-            # Ensure image path is absolute and properly formatted
-            img_path = normalize_path(os.path.abspath(images[-1]))
-            f.write(f"file '{img_path}'\n")
-        
-        # Create the video with images
-        print("Creating video with images...")
-        print(f"Using image list file: {image_list_file}")
-        
-        video_temp = normalize_path(os.path.join(temp_dir, "temp_video.mp4"))
-        ffmpeg_cmd = [
-            "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", image_list_file,
-            "-c:v", "libx264", "-r", "30", "-pix_fmt", "yuv420p", video_temp
-        ]
-        print(f"Running ffmpeg command: {' '.join(ffmpeg_cmd)}")
-        subprocess.run(ffmpeg_cmd, check=True)
-        
-        # Add audio to the video
-        print("Adding narration to video...")
-        video_with_audio = normalize_path(os.path.join(temp_dir, "video_with_audio.mp4"))
-        narration_file = normalize_path(narration_file)
-        
-        ffmpeg_cmd = [
-            "ffmpeg", "-y", "-i", video_temp, "-i", narration_file,
-            "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac",
-            "-shortest", video_with_audio
-        ]
-        subprocess.run(ffmpeg_cmd, check=True)
-        
-        # Add subtitles to the video
-        print("Adding subtitles to video...")
-        subtitle_file = normalize_path(subtitle_file)
-        output_file = normalize_path(output_file)
-        
-        ffmpeg_cmd = [
-            "ffmpeg", "-y", "-i", video_with_audio, "-vf",
-            f"subtitles={subtitle_file}:force_style='FontSize=24,Alignment=2'",
-            "-c:a", "copy", output_file
-        ]
-        subprocess.run(ffmpeg_cmd, check=True)
-        
-        print(f"Video created successfully: {output_file}")
-        return True
-        
-    except subprocess.CalledProcessError as e:
-        print(f"Error creating video: {e}")
-        return False
-    except Exception as e:
-        print(f"Unexpected error: {e}")
-        return False
-        
 # 4. Add this new function to support precise image timing based on durations
 def create_video_with_segments_and_durations(title, narration_file, subtitle_file, images, output_file, temp_dir, image_durations=None):
     """
@@ -838,6 +780,7 @@ def create_video_with_segments_and_durations(title, narration_file, subtitle_fil
         print("Adding narration to video...")
         video_with_audio = os.path.join(temp_dir, "video_with_audio.mp4")
         video_with_audio = normalize_path(video_with_audio)
+        narration_file = normalize_path(narration_file)
         
         ffmpeg_cmd = [
             "ffmpeg", "-y", "-i", video_temp, "-i", narration_file,
@@ -846,15 +789,18 @@ def create_video_with_segments_and_durations(title, narration_file, subtitle_fil
         ]
         subprocess.run(ffmpeg_cmd, check=True)
         
-        # Add subtitles to the video using hardcoded method
+        # Add subtitles to the video using our improved function
         print("Adding subtitles to video...")
         subtitle_file = normalize_path(subtitle_file)
         output_file = normalize_path(output_file)
         
-        # Try subtitle methods with fallbacks as in the original code
-        try_add_subtitles(video_with_audio, subtitle_file, output_file, temp_dir)
+        subtitle_success = try_add_subtitles(video_with_audio, subtitle_file, output_file, temp_dir)
         
-        print(f"Video created successfully: {output_file}")
+        if subtitle_success:
+            print(f"Video created successfully with subtitles: {output_file}")
+        else:
+            print(f"Video created without subtitles: {output_file}")
+        
         return True
         
     except subprocess.CalledProcessError as e:
@@ -863,69 +809,6 @@ def create_video_with_segments_and_durations(title, narration_file, subtitle_fil
     except Exception as e:
         print(f"Unexpected error: {e}")
         return False
-
-def try_add_subtitles(video_with_audio, subtitle_file, output_file, temp_dir):
-    """Try different methods to add subtitles to the video."""
-    # Try method 1: Using subtitles filter with simplified options
-    try:
-        print("Trying subtitle method 1...")
-        
-        # Create a clean copy of the subtitle file with simpler path
-        simple_sub_file = os.path.join(temp_dir, "simple_subs.srt")
-        simple_sub_file = normalize_path(simple_sub_file)
-        import shutil
-        shutil.copy2(subtitle_file, simple_sub_file)
-        
-        # Use a simpler subtitle filter with fewer options
-        ffmpeg_cmd = [
-            "ffmpeg", "-y", "-i", video_with_audio, 
-            "-vf", f"subtitles={simple_sub_file}", 
-            "-c:a", "copy", output_file
-        ]
-        subprocess.run(ffmpeg_cmd, check=True)
-        return True
-    except subprocess.CalledProcessError:
-        print("First subtitle method failed, trying method 2...")
-        
-        # Try method 2: Hardcode the subtitles into the video with ASS format
-        try:
-            # Convert SRT to ASS (Advanced SubStation Alpha)
-            ass_subtitle = os.path.join(temp_dir, "subtitles.ass")
-            ass_subtitle = normalize_path(ass_subtitle)
-            
-            # First create a simple ASS file from the SRT
-            ffmpeg_cmd = [
-                "ffmpeg", "-y", "-i", subtitle_file, ass_subtitle
-            ]
-            subprocess.run(ffmpeg_cmd, check=True)
-            
-            # Then hardcode the ASS subtitles
-            ffmpeg_cmd = [
-                "ffmpeg", "-y", "-i", video_with_audio, 
-                "-vf", f"ass={ass_subtitle}", 
-                "-c:a", "copy", output_file
-            ]
-            subprocess.run(ffmpeg_cmd, check=True)
-            return True
-        except subprocess.CalledProcessError:
-            print("Second subtitle method failed, trying method 3 (no styling)...")
-            
-            # Try method 3: Simplest possible approach with no styling
-            ffmpeg_cmd = [
-                "ffmpeg", "-y", "-i", video_with_audio, 
-                "-vf", f"subtitles={simple_sub_file}:force_style=''", 
-                "-c:a", "copy", output_file
-            ]
-            try:
-                subprocess.run(ffmpeg_cmd, check=True)
-                return True
-            except subprocess.CalledProcessError:
-                print("All subtitle methods failed. Creating video without subtitles.")
-                
-                # Fall back to no subtitles if all methods fail
-                import shutil
-                shutil.copy2(video_with_audio, output_file)
-                return False
 
 def main():
     """Main function to coordinate the video creation process."""
@@ -1015,8 +898,18 @@ def main():
         )
         
         if not success:
-            print("Video creation failed with both methods.")
-            return
+            print("Video creation failed with both methods. Creating video without subtitles...")
+            # Create video with just images and audio as last resort
+            try:
+                video_with_audio = os.path.join(args.temp_dir, "video_with_audio.mp4")
+                if os.path.exists(video_with_audio):
+                    import shutil
+                    shutil.copy2(video_with_audio, base_output)
+                    success = True
+                    print(f"Created video without subtitles: {base_output}")
+            except Exception as e:
+                print(f"Final fallback video creation also failed: {e}")
+                return
     
     # Add title cards if not disabled
     if args.no_title_cards:
@@ -1025,10 +918,27 @@ def main():
         shutil.copy(base_output, args.output)
         print(f"Video creation complete. Output file: {args.output}")
     else:
-        from title_cards import add_title_cards_to_video
         try:
+            from title_cards import add_title_cards_to_video
             print("Adding title cards to video...")
-            final_video = add_title_cards_to_video(base_output, args.title, args.temp_dir, args.output)
+            
+            # Create a concat list file with absolute paths
+            concat_list = os.path.join(args.temp_dir, "concat_list.txt")
+            intro_video = os.path.join(args.temp_dir, "intro.mp4")
+            outro_video = os.path.join(args.temp_dir, "outro.mp4")
+            
+            # Ensure all paths are absolute and normalized
+            base_output = os.path.abspath(base_output)
+            intro_video = os.path.abspath(intro_video)
+            outro_video = os.path.abspath(outro_video)
+            
+            # Call the function with absolute paths
+            final_video = add_title_cards_to_video(
+                base_output, 
+                args.title, 
+                os.path.abspath(args.temp_dir), 
+                os.path.abspath(args.output)
+            )
             print(f"Final video with title cards created: {args.output}")
         except Exception as e:
             print(f"Error adding title cards: {e}")

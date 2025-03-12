@@ -3,8 +3,25 @@
 
 import os
 import argparse
+import re
 from PIL import Image, ImageDraw, ImageFont
 import textwrap
+import subprocess
+
+def normalize_path(path):
+    """
+    Normalize a path for cross-platform compatibility with FFmpeg.
+    """
+    # Get absolute path
+    path = os.path.abspath(path)
+    
+    # Remove any duplicate directory references
+    path = re.sub(r'(/|\\)temp\1temp\1', r'\1temp\1', path)
+    
+    # Convert backslashes to forward slashes for FFmpeg
+    path = path.replace('\\', '/')
+    
+    return path
 
 def create_title_card(title, output_path, width=1920, height=1080, 
                       bg_color=(5, 5, 30), text_color=(240, 240, 255)):
@@ -61,6 +78,9 @@ def create_title_card(title, output_path, width=1920, height=1080,
         y = y + title_height + 40  # Position below the title
         
         draw.text((x, y), subtitle, font=subtitle_font, fill=text_color)
+        
+        # Ensure output directory exists
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
         
         # Save the image
         image.save(output_path)
@@ -132,6 +152,9 @@ def create_outro_card(title, output_path, width=1920, height=1080,
             draw.text((x, y), line, font=credits_font, fill=text_color)
             y += 50  # Space between lines
         
+        # Ensure output directory exists
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        
         # Save the image
         image.save(output_path)
         print(f"Outro card created: {output_path}")
@@ -154,55 +177,158 @@ def add_title_cards_to_video(video_path, title, temp_dir, output_path=None):
     Returns:
         str: Path to the output video
     """
-    import subprocess
-    import time
-    
     if not output_path:
         filename, ext = os.path.splitext(video_path)
         output_path = f"{filename}_with_titles{ext}"
+    
+    # Normalize all paths and ensure they're absolute
+    video_path = normalize_path(video_path)
+    temp_dir = normalize_path(temp_dir)
+    output_path = normalize_path(output_path)
+    
+    # Create temp directory if it doesn't exist
+    os.makedirs(temp_dir, exist_ok=True)
     
     # Create title cards
     intro_path = os.path.join(temp_dir, "intro_card.png")
     outro_path = os.path.join(temp_dir, "outro_card.png")
     
+    intro_path = normalize_path(intro_path)
+    outro_path = normalize_path(outro_path)
+    
     create_title_card(title, intro_path)
     create_outro_card(title, outro_path)
     
     # Create temporary files for the intro and outro videos
-    intro_video = os.path.join(temp_dir, "intro.mp4")
+    intro_video = os.path.join(temp_dir, "intro.mp4") 
     outro_video = os.path.join(temp_dir, "outro.mp4")
     
+    intro_video = normalize_path(intro_video)
+    outro_video = normalize_path(outro_video)
+    
     # Convert intro image to video (5 seconds)
-    subprocess.run([
-        "ffmpeg", "-y", "-loop", "1", "-i", intro_path, "-c:v", "libx264",
-        "-t", "5", "-pix_fmt", "yuv420p", "-vf", "scale=1920:1080", intro_video
-    ], check=True)
+    try:
+        # Print all paths for debugging
+        print(f"Creating intro video:")
+        print(f"  Source: {intro_path}")
+        print(f"  Output: {intro_video}")
+        
+        subprocess.run([
+            "ffmpeg", "-y", "-loop", "1", "-i", intro_path, "-c:v", "libx264",
+            "-t", "5", "-pix_fmt", "yuv420p", "-vf", "scale=1920:1080", intro_video
+        ], check=True)
+    except subprocess.CalledProcessError as e:
+        print(f"Error creating intro video: {e}")
+        # Create a fallback video without the title cards
+        import shutil
+        shutil.copy2(video_path, output_path)
+        return output_path
     
     # Convert outro image to video (5 seconds)
-    subprocess.run([
-        "ffmpeg", "-y", "-loop", "1", "-i", outro_path, "-c:v", "libx264",
-        "-t", "5", "-pix_fmt", "yuv420p", "-vf", "scale=1920:1080", outro_video
-    ], check=True)
+    try:
+        print(f"Creating outro video:")
+        print(f"  Source: {outro_path}")
+        print(f"  Output: {outro_video}")
+        
+        subprocess.run([
+            "ffmpeg", "-y", "-loop", "1", "-i", outro_path, "-c:v", "libx264",
+            "-t", "5", "-pix_fmt", "yuv420p", "-vf", "scale=1920:1080", outro_video
+        ], check=True)
+    except subprocess.CalledProcessError as e:
+        print(f"Error creating outro video: {e}")
+        # If intro succeeded but outro failed, try with just the intro
+        try:
+            # Create a list file with just the intro and main video
+            concat_list = os.path.join(temp_dir, "concat_list.txt")
+            with open(concat_list, "w") as f:
+                f.write(f"file '{intro_video}'\n")
+                f.write(f"file '{video_path}'\n")
+            
+            # Concatenate just the intro and main video
+            subprocess.run([
+                "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_list,
+                "-c", "copy", output_path
+            ], check=True)
+            
+            print(f"Video with intro card only created: {output_path}")
+            return output_path
+        except Exception:
+            # Fall back to the original video if concatenation fails
+            import shutil
+            shutil.copy2(video_path, output_path)
+            return output_path
     
-    # Create a list file for concatenation
+    # Create a list file for concatenation with absolute paths
     concat_list = os.path.join(temp_dir, "concat_list.txt")
+    
+    # Debug: print paths before writing to concat file
+    print(f"\nPaths for concatenation:")
+    print(f"  Intro: {intro_video}")
+    print(f"  Main: {video_path}")
+    print(f"  Outro: {outro_video}")
+    print(f"  Concat list: {concat_list}")
+    
     with open(concat_list, "w") as f:
         f.write(f"file '{intro_video}'\n")
         f.write(f"file '{video_path}'\n")
         f.write(f"file '{outro_video}'\n")
     
-    # Concatenate the videos
-    subprocess.run([
-        "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_list,
-        "-c", "copy", output_path
-    ], check=True)
+    # Print the content of the concat file for debugging
+    print("\nContent of concat file:")
+    with open(concat_list, "r") as f:
+        print(f.read())
     
-    print(f"Video with title cards created: {output_path}")
-    return output_path
+    # Concatenate the videos
+    try:
+        print(f"\nConcatenating videos to: {output_path}")
+        
+        concat_cmd = [
+            "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_list,
+            "-c", "copy", output_path
+        ]
+        
+        print(f"Command: {' '.join(concat_cmd)}")
+        
+        subprocess.run(concat_cmd, check=True)
+        
+        print(f"Video with title cards created: {output_path}")
+        return output_path
+    except subprocess.CalledProcessError as e:
+        print(f"Error during concatenation: {e}")
+        
+        # Try an alternative concatenation approach
+        try:
+            print("\nTrying alternative concatenation method...")
+            
+            # Create a temporary file to hold the merged intro+main
+            temp_merged = os.path.join(temp_dir, "intro_main_merged.mp4")
+            
+            # First merge intro with main video
+            subprocess.run([
+                "ffmpeg", "-y", "-i", intro_video, "-i", video_path,
+                "-filter_complex", "[0:v][1:v]concat=n=2:v=1:a=0[v]", 
+                "-map", "[v]", "-c:v", "libx264", temp_merged
+            ], check=True)
+            
+            # Then merge the result with outro
+            subprocess.run([
+                "ffmpeg", "-y", "-i", temp_merged, "-i", outro_video,
+                "-filter_complex", "[0:v][1:v]concat=n=2:v=1:a=0[v]", 
+                "-map", "[v]", "-c:v", "libx264", output_path
+            ], check=True)
+            
+            print(f"Video created with alternative method: {output_path}")
+            return output_path
+        except Exception as fallback_e:
+            print(f"Alternative method also failed: {fallback_e}")
+            # Provide a fallback
+            import shutil
+            shutil.copy2(video_path, output_path)
+            print(f"Using video without title cards as final output: {output_path}")
+            return output_path
+
 
 if __name__ == "__main__":
-    import time
-    
     parser = argparse.ArgumentParser(description="Create title cards for videos")
     parser.add_argument("--title", required=True, help="Video title")
     parser.add_argument("--video", help="Input video to add title cards to")
