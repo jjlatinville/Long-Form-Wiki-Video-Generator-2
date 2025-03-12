@@ -580,7 +580,7 @@ def create_video_with_segments(title, narration_file, subtitle_file, images, par
         
         ffmpeg_cmd = [
             "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", image_list_file,
-            "-c:v", "libx264", "-r", "30", "-pix_fmt", "yuv420p", "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2", video_temp
+            "-c:v", "libx264", "-r", "30", "-pix_fmt", "yuv420p", video_temp
         ]
         subprocess.run(ffmpeg_cmd, check=True)
         
@@ -661,7 +661,7 @@ def create_video(title, narration_file, subtitle_file, images, output_file, temp
         
         ffmpeg_cmd = [
             "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", image_list_file,
-            "-c:v", "libx264", "-r", "30", "-pix_fmt", "yuv420p", "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2", video_temp
+            "-c:v", "libx264", "-r", "30", "-pix_fmt", "yuv420p", video_temp
         ]
         subprocess.run(ffmpeg_cmd, check=True)
         
@@ -772,7 +772,7 @@ def create_video_with_segments_and_durations(title, narration_file, subtitle_fil
         
         ffmpeg_cmd = [
             "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", image_list_file,
-            "-c:v", "libx264", "-r", "30", "-pix_fmt", "yuv420p", "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2", video_temp
+            "-c:v", "libx264", "-r", "30", "-pix_fmt", "yuv420p", video_temp
         ]
         subprocess.run(ffmpeg_cmd, check=True)
         

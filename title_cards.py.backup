@@ -246,7 +246,7 @@ def add_title_cards_to_video(video_path, title, temp_dir, output_path=None):
             
             # Concatenate just the intro and main video
             subprocess.run([
-                "ffmpeg", "-y", "-fflags", "+genpts", "-f", "concat", "-safe", "0", "-i", concat_list,
+                "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_list,
                 "-c", "copy", output_path
             ], check=True)
             
@@ -283,7 +283,7 @@ def add_title_cards_to_video(video_path, title, temp_dir, output_path=None):
         print(f"\nConcatenating videos to: {output_path}")
         
         concat_cmd = [
-            "ffmpeg", "-y", "-fflags", "+genpts", "-f", "concat", "-safe", "0", "-i", concat_list,
+            "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_list,
             "-c", "copy", output_path
         ]
         
