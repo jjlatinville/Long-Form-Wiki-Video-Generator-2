@@ -100,7 +100,6 @@ def setup_directories(temp_dir):
 def fetch_wiki_content(links, temp_dir):
     """Fetch content from Wikipedia using wiki_grabber.py."""
     all_content = []
-    all_images = []
     
     for i, link in enumerate(links):
         print(f"Processing Wikipedia link {i+1}/{len(links)}: {link}")
@@ -128,26 +127,11 @@ def fetch_wiki_content(links, temp_dir):
                 "content": text_content,
                 "file": content_file
             })
-            
-            # Get images
-            print(f"Fetching images for: {page_title}")
-            images = get_commons_category_images(page_title, max_images=10)
-            
-            if images:
-                image_dir = os.path.join(temp_dir, "images", f"{i}_{page_title.replace(' ', '_')}")
-                os.makedirs(image_dir, exist_ok=True)
-                saved_images = download_thumbnail_images(images, folder=image_dir, min_width=1280)
-                
-                if saved_images:
-                    all_images.extend(saved_images)
-                    print(f"Downloaded {len(saved_images)} images for {page_title}")
-            else:
-                print(f"No images found for {page_title}")
         else:
             print(f"Failed to retrieve Wikipedia content for: {page_title}")
     
-    return all_content, all_images
-
+    return all_content, []  # Return empty list for images
+    
 def generate_script(title, wiki_contents, target_length):
     """Generate a script using OpenAI based on the Wikipedia content."""
     combined_content = ""
@@ -944,7 +928,6 @@ def try_add_subtitles(video_with_audio, subtitle_file, output_file, temp_dir):
                 shutil.copy2(video_with_audio, output_file)
                 return False
 
-# Update the main function to pass the test narration parameters
 def main():
     """Main function to coordinate the video creation process."""
     args = parse_arguments()
@@ -956,7 +939,7 @@ def main():
     # Set up directories
     directories = setup_directories(args.temp_dir)
     
-    # Fetch Wikipedia content for the script (keep this part)
+    # Fetch Wikipedia content for the script only (no images)
     wiki_contents, _ = fetch_wiki_content(args.links, args.temp_dir)
     
     if not wiki_contents:
@@ -989,7 +972,7 @@ def main():
     # Generate subtitles
     subtitle_file = generate_subtitles(narration_file, script, args.temp_dir)
     
-    # REPLACE the wiki_grabber image fetching with our new Pixabay image fetcher
+    # Get images from Pixabay based on script content
     print("Getting relevant images from Pixabay based on script content...")
     try:
         image_paths, image_durations, segments = get_relevant_images_for_script(
@@ -1054,6 +1037,6 @@ def main():
             import shutil
             shutil.copy(base_output, args.output)
             print(f"Video creation complete. Output file: {args.output}")
-
+            
 if __name__ == "__main__":
     main()
