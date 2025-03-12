@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# pixabay_image_fetcher.py
+# pixabay_image_fetcher.py - Fixed version with filename sanitization
 
 import os
 import re
@@ -262,6 +262,29 @@ def fetch_pixabay_images(search_term, api_key, min_width=1280, max_results=3):
         print(f"Error fetching Pixabay images for '{search_term}': {e}")
         return []
 
+def sanitize_filename(filename):
+    """
+    Sanitize a filename to make it valid for all operating systems.
+    
+    Args:
+        filename (str): Original filename
+        
+    Returns:
+        str: Sanitized filename
+    """
+    # Remove invalid characters for Windows filenames (most restrictive)
+    invalid_chars = r'[<>:"/\\|?*\x00-\x1F]'
+    sanitized = re.sub(invalid_chars, '', filename)
+    
+    # Ensure it doesn't end with a space or period (Windows restriction)
+    sanitized = sanitized.rstrip('. ')
+    
+    # If the filename is empty after sanitizing, provide a default
+    if not sanitized:
+        sanitized = "image"
+        
+    return sanitized
+
 def download_image(url, folder, filename):
     """
     Download an image from a URL.
@@ -276,10 +299,13 @@ def download_image(url, folder, filename):
     """
     os.makedirs(folder, exist_ok=True)
     
+    # Sanitize the filename to avoid errors
+    sanitized_filename = sanitize_filename(filename)
+    
     try:
         response = requests.get(url, stream=True)
         if response.status_code == 200:
-            file_path = os.path.join(folder, filename)
+            file_path = os.path.join(folder, sanitized_filename)
             with open(file_path, 'wb') as f:
                 for chunk in response.iter_content(chunk_size=1024):
                     if chunk:
@@ -314,7 +340,7 @@ def get_images_for_segments(segments, pixabay_api_key, images_dir):
             # Use the first image (best match)
             image_url = image_urls[0]
             
-            # Generate a filename
+            # Generate a filename - sanitize the search term to avoid issues
             filename = f"segment_{i+1}_{search_term.replace(' ', '_')[:30]}.jpg"
             
             # Download the image
