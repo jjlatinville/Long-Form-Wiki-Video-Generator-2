@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 from wiki_grabber import extract_wiki_title, get_wiki_content_via_api, process_wiki_content
 from wiki_grabber import get_commons_category_images, download_thumbnail_images
 import openai
+from pixabay_image_fetcher import get_relevant_images_for_script
 
 
 def normalize_path_list(file_list):
@@ -56,6 +57,8 @@ def parse_arguments():
     parser.add_argument("--no-title-cards", action="store_true", help="Disable intro and outro title cards")
     parser.add_argument("--test-narration", action="store_true", help="Use test narration audio from test_audio folder")
     parser.add_argument("--test-audio-dir", default="test_audio", help="Directory with test audio files")
+    # Add the new argument for Pixabay API key
+    parser.add_argument("--pixabay_key", help="Pixabay API key (optional, can use PIXABAY_API_KEY env variable)")
     
     return parser.parse_args()
 
@@ -769,6 +772,177 @@ def create_video(title, narration_file, subtitle_file, images, output_file, temp
     except Exception as e:
         print(f"Unexpected error: {e}")
         return False
+        
+# 4. Add this new function to support precise image timing based on durations
+def create_video_with_segments_and_durations(title, narration_file, subtitle_file, images, output_file, temp_dir, image_durations=None):
+    """
+    Create a video with precise image timing based on segment durations.
+    
+    Args:
+        title (str): Video title
+        narration_file (str): Path to narration audio file
+        subtitle_file (str): Path to subtitle file
+        images (list): List of image paths
+        output_file (str): Path to output video file
+        temp_dir (str): Directory for temporary files
+        image_durations (list): List of durations for each image in seconds
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    if not images:
+        print("No images available for the video.")
+        return False
+    
+    try:
+        # Determine audio duration for reference
+        ffprobe_cmd = [
+            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1", narration_file
+        ]
+        audio_duration = float(subprocess.check_output(ffprobe_cmd).decode('utf-8').strip())
+        
+        # Normalize paths for FFmpeg compatibility
+        images = normalize_path_list(images)
+        
+        # Create a file with image transitions
+        image_list_file = normalize_path(os.path.join(temp_dir, "image_list.txt"))
+        with open(image_list_file, "w", encoding="utf-8") as f:
+            # If we have explicit durations, use those
+            if image_durations and len(image_durations) == len(images):
+                for i, (image, duration) in enumerate(zip(images, image_durations)):
+                    # Ensure image path is absolute and properly formatted
+                    img_path = normalize_path(os.path.abspath(image))
+                    # Escape single quotes in path
+                    img_path = img_path.replace("'", "'\\''")
+                    f.write(f"file '{img_path}'\n")
+                    f.write(f"duration {duration}\n")
+                
+                # Add last image
+                img_path = normalize_path(os.path.abspath(images[-1]))
+                img_path = img_path.replace("'", "'\\''")
+                f.write(f"file '{img_path}'\n")
+            else:
+                # Fall back to even distribution if no durations provided
+                images_count = len(images)
+                duration_per_image = audio_duration / images_count
+                
+                for i, image in enumerate(images):
+                    # Ensure image path is absolute and properly formatted
+                    img_path = normalize_path(os.path.abspath(image))
+                    # Escape single quotes in path
+                    img_path = img_path.replace("'", "'\\''")
+                    f.write(f"file '{img_path}'\n")
+                    f.write(f"duration {duration_per_image}\n")
+                
+                # Add last image
+                img_path = normalize_path(os.path.abspath(images[-1]))
+                img_path = img_path.replace("'", "'\\''")
+                f.write(f"file '{img_path}'\n")
+        
+        # Create the video with images
+        print("Creating video with precisely timed images...")
+        video_temp = os.path.join(temp_dir, "temp_video.mp4")
+        video_temp = normalize_path(video_temp)
+        
+        ffmpeg_cmd = [
+            "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", image_list_file,
+            "-c:v", "libx264", "-r", "30", "-pix_fmt", "yuv420p", video_temp
+        ]
+        subprocess.run(ffmpeg_cmd, check=True)
+        
+        # Add audio to the video
+        print("Adding narration to video...")
+        video_with_audio = os.path.join(temp_dir, "video_with_audio.mp4")
+        video_with_audio = normalize_path(video_with_audio)
+        
+        ffmpeg_cmd = [
+            "ffmpeg", "-y", "-i", video_temp, "-i", narration_file,
+            "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac",
+            "-shortest", video_with_audio
+        ]
+        subprocess.run(ffmpeg_cmd, check=True)
+        
+        # Add subtitles to the video using hardcoded method
+        print("Adding subtitles to video...")
+        subtitle_file = normalize_path(subtitle_file)
+        output_file = normalize_path(output_file)
+        
+        # Try subtitle methods with fallbacks as in the original code
+        try_add_subtitles(video_with_audio, subtitle_file, output_file, temp_dir)
+        
+        print(f"Video created successfully: {output_file}")
+        return True
+        
+    except subprocess.CalledProcessError as e:
+        print(f"Error creating video: {e}")
+        return False
+    except Exception as e:
+        print(f"Unexpected error: {e}")
+        return False
+
+def try_add_subtitles(video_with_audio, subtitle_file, output_file, temp_dir):
+    """Try different methods to add subtitles to the video."""
+    # Try method 1: Using subtitles filter with simplified options
+    try:
+        print("Trying subtitle method 1...")
+        
+        # Create a clean copy of the subtitle file with simpler path
+        simple_sub_file = os.path.join(temp_dir, "simple_subs.srt")
+        simple_sub_file = normalize_path(simple_sub_file)
+        import shutil
+        shutil.copy2(subtitle_file, simple_sub_file)
+        
+        # Use a simpler subtitle filter with fewer options
+        ffmpeg_cmd = [
+            "ffmpeg", "-y", "-i", video_with_audio, 
+            "-vf", f"subtitles={simple_sub_file}", 
+            "-c:a", "copy", output_file
+        ]
+        subprocess.run(ffmpeg_cmd, check=True)
+        return True
+    except subprocess.CalledProcessError:
+        print("First subtitle method failed, trying method 2...")
+        
+        # Try method 2: Hardcode the subtitles into the video with ASS format
+        try:
+            # Convert SRT to ASS (Advanced SubStation Alpha)
+            ass_subtitle = os.path.join(temp_dir, "subtitles.ass")
+            ass_subtitle = normalize_path(ass_subtitle)
+            
+            # First create a simple ASS file from the SRT
+            ffmpeg_cmd = [
+                "ffmpeg", "-y", "-i", subtitle_file, ass_subtitle
+            ]
+            subprocess.run(ffmpeg_cmd, check=True)
+            
+            # Then hardcode the ASS subtitles
+            ffmpeg_cmd = [
+                "ffmpeg", "-y", "-i", video_with_audio, 
+                "-vf", f"ass={ass_subtitle}", 
+                "-c:a", "copy", output_file
+            ]
+            subprocess.run(ffmpeg_cmd, check=True)
+            return True
+        except subprocess.CalledProcessError:
+            print("Second subtitle method failed, trying method 3 (no styling)...")
+            
+            # Try method 3: Simplest possible approach with no styling
+            ffmpeg_cmd = [
+                "ffmpeg", "-y", "-i", video_with_audio, 
+                "-vf", f"subtitles={simple_sub_file}:force_style=''", 
+                "-c:a", "copy", output_file
+            ]
+            try:
+                subprocess.run(ffmpeg_cmd, check=True)
+                return True
+            except subprocess.CalledProcessError:
+                print("All subtitle methods failed. Creating video without subtitles.")
+                
+                # Fall back to no subtitles if all methods fail
+                import shutil
+                shutil.copy2(video_with_audio, output_file)
+                return False
 
 # Update the main function to pass the test narration parameters
 def main():
@@ -782,8 +956,8 @@ def main():
     # Set up directories
     directories = setup_directories(args.temp_dir)
     
-    # Fetch Wikipedia content
-    wiki_contents, images = fetch_wiki_content(args.links, args.temp_dir)
+    # Fetch Wikipedia content for the script (keep this part)
+    wiki_contents, _ = fetch_wiki_content(args.links, args.temp_dir)
     
     if not wiki_contents:
         print("No Wikipedia content could be retrieved. Exiting.")
@@ -815,19 +989,39 @@ def main():
     # Generate subtitles
     subtitle_file = generate_subtitles(narration_file, script, args.temp_dir)
     
+    # REPLACE the wiki_grabber image fetching with our new Pixabay image fetcher
+    print("Getting relevant images from Pixabay based on script content...")
+    try:
+        image_paths, image_durations, segments = get_relevant_images_for_script(
+            script_file,
+            subtitle_file,
+            directories['images_dir'],
+            args.pixabay_key
+        )
+        
+        if not image_paths:
+            print("No images found from Pixabay. Exiting.")
+            return
+            
+        print(f"Found {len(image_paths)} relevant images for the video.")
+        
+        # Save segments data for reference
+        segments_file = os.path.join(directories['temp_dir'], "segments.json")
+        with open(segments_file, "w", encoding="utf-8") as f:
+            json.dump(segments, f, indent=2)
+            
+    except Exception as e:
+        print(f"Error getting Pixabay images: {e}")
+        return
+    
     # Create a base video without title cards
     base_output = normalize_path(os.path.join(args.temp_dir, "base_video.mp4"))
     
-    # Debug: print image paths before creating video
-    print(f"Images available for video ({len(images)}):")
-    for i, img in enumerate(images):
-        exists = os.path.exists(img)
-        print(f"  {i+1}. {img} (Exists: {exists})")
-    
-    # Create the video with paragraph-based timing
-    success = create_video_with_segments(
+    # Create the video with precise image timing based on segments
+    success = create_video_with_segments_and_durations(
         args.title, narration_file, subtitle_file, 
-        images, paragraphs, base_output, args.temp_dir
+        image_paths, base_output, args.temp_dir,
+        image_durations=image_durations
     )
     
     if not success:
@@ -835,7 +1029,7 @@ def main():
         # Fallback to simpler video creation if the advanced method fails
         success = create_video(
             args.title, narration_file, subtitle_file, 
-            images, base_output, args.temp_dir
+            image_paths, base_output, args.temp_dir
         )
         
         if not success:
