@@ -10,7 +10,6 @@ import requests
 import re
 from dotenv import load_dotenv
 from wiki_grabber import extract_wiki_title, get_wiki_content_via_api, process_wiki_content
-from wiki_grabber import get_commons_category_images, download_thumbnail_images
 import openai
 from pixabay_image_fetcher import get_relevant_images_for_script
 
